@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-
+from app.matcher import score_match
 app = FastAPI(title="Job Match Tracker")
 
 # --- In-memory store (swap for a real DB later) ---
@@ -54,3 +54,16 @@ def update_status(app_id: int, status: str):
         raise HTTPException(status_code=404, detail="Application not found")
     record.status = status
     return record
+
+class MatchRequest(BaseModel):
+    resume_text: str
+    job_description: str
+
+
+@app.post("/match")
+def match_resume_to_job(payload: MatchRequest):
+    try:
+        result = score_match(payload.resume_text, payload.job_description)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
