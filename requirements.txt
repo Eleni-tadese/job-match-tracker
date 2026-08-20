@@ -1,5 +1,5 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-scikit-learn==1.5.2
-pydantic==2.9.2
-SQLAlchemy==2.0.35
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+scikit-learn>=1.7.2
+pydantic>=2.10.0
+SQLAlchemy>=2.0.35

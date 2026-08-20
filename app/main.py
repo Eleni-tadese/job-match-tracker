@@ -6,7 +6,6 @@ from app.database import engine, get_db, Base
 from app.models import ApplicationDB
 from app.matcher import score_match
 
-# Creates the applications table in job_tracker.db if it doesn't exist yet.
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Job Match Tracker")
@@ -19,7 +18,7 @@ class Application(BaseModel):
     status: str = "applied"
 
     class Config:
-        from_attributes = True  # lets us build this from an ORM object
+        from_attributes = True
 
 
 class ApplicationOut(Application):
@@ -75,3 +74,59 @@ def match_resume_to_job(payload: MatchRequest):
         return score_match(payload.resume_text, payload.job_description)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- New: batch scoring across all saved applications ----
+
+class BatchMatchRequest(BaseModel):
+    resume_text: str
+
+
+class BatchMatchResult(BaseModel):
+    id: int
+    company: str
+    role: str
+    match_score: float
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+
+
+@app.post("/applications/match-resume", response_model=list[BatchMatchResult])
+def match_resume_against_all(payload: BatchMatchRequest, db: Session = Depends(get_db)):
+    """
+    Scores one resume against every saved application's job description,
+    and returns the results ranked best-match first. This turns the
+    single-pair matcher into a real "which of my saved jobs am I the
+    strongest fit for" tool.
+    """
+    applications = db.query(ApplicationDB).all()
+
+    if not applications:
+        raise HTTPException(
+            status_code=404,
+            detail="No saved applications to match against. Add some via POST /applications first.",
+        )
+
+    results = []
+    for application in applications:
+        try:
+            match = score_match(payload.resume_text, application.job_description)
+        except ValueError:
+            # Skip any application with an empty/unusable job description
+            # rather than failing the whole batch for one bad record.
+            continue
+
+        results.append(
+            BatchMatchResult(
+                id=application.id,
+                company=application.company,
+                role=application.role,
+                match_score=match["match_score"],
+                matched_keywords=match["matched_keywords"],
+                missing_keywords=match["missing_keywords"],
+            )
+        )
+
+    # Best match first
+    results.sort(key=lambda r: r.match_score, reverse=True)
+    return results
