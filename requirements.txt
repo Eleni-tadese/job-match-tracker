@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30.6
 scikit-learn>=1.7.2
 pydantic>=2.10.0
 SQLAlchemy>=2.0.35
+pytest>=8.0.0
