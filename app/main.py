@@ -1,12 +1,12 @@
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import engine, get_db, Base
-from app.models import ApplicationDB
+from app.models import ApplicationDB, ProfileDB
 from app.matcher import score_match
-
-from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
 
@@ -14,24 +14,40 @@ app = FastAPI(title="Job Match Tracker")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class Application(BaseModel):
+
+class ApplicationIn(BaseModel):
     company: str
     role: str
     job_description: str
     status: str = "applied"
+    notes: str = ""
+
+
+class ApplicationUpdate(BaseModel):
+    company: str | None = None
+    role: str | None = None
+    job_description: str | None = None
+    notes: str | None = None
+
+
+class ApplicationOut(BaseModel):
+    id: int
+    company: str
+    role: str
+    job_description: str
+    status: str
+    notes: str
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
-
-
-class ApplicationOut(Application):
-    id: int
 
 
 @app.get("/")
@@ -40,7 +56,7 @@ def root():
 
 
 @app.post("/applications", response_model=ApplicationOut)
-def create_application(app_in: Application, db: Session = Depends(get_db)):
+def create_application(app_in: ApplicationIn, db: Session = Depends(get_db)):
     record = ApplicationDB(**app_in.model_dump())
     db.add(record)
     db.commit()
@@ -50,7 +66,11 @@ def create_application(app_in: Application, db: Session = Depends(get_db)):
 
 @app.get("/applications", response_model=list[ApplicationOut])
 def list_applications(db: Session = Depends(get_db)):
-    return db.query(ApplicationDB).all()
+    return (
+        db.query(ApplicationDB)
+        .order_by(ApplicationDB.updated_at.desc())
+        .all()
+    )
 
 
 @app.get("/applications/{app_id}", response_model=ApplicationOut)
@@ -58,6 +78,22 @@ def get_application(app_id: int, db: Session = Depends(get_db)):
     record = db.query(ApplicationDB).filter(ApplicationDB.id == app_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="Application not found")
+    return record
+
+
+@app.patch("/applications/{app_id}", response_model=ApplicationOut)
+def edit_application(
+    app_id: int, updates: ApplicationUpdate, db: Session = Depends(get_db)
+):
+    record = db.query(ApplicationDB).filter(ApplicationDB.id == app_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    for field, value in updates.model_dump(exclude_unset=True).items():
+        setattr(record, field, value)
+
+    db.commit()
+    db.refresh(record)
     return record
 
 
@@ -72,6 +108,55 @@ def update_status(app_id: int, status: str, db: Session = Depends(get_db)):
     return record
 
 
+@app.delete("/applications/{app_id}")
+def delete_application(app_id: int, db: Session = Depends(get_db)):
+    record = db.query(ApplicationDB).filter(ApplicationDB.id == app_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Application not found")
+    db.delete(record)
+    db.commit()
+    return {"deleted": True, "id": app_id}
+
+
+# ---- Resume Profile: save once, reuse everywhere ----
+
+class ProfileIn(BaseModel):
+    resume_text: str
+
+
+class ProfileOut(BaseModel):
+    resume_text: str
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@app.get("/profile", response_model=ProfileOut)
+def get_profile(db: Session = Depends(get_db)):
+    profile = db.query(ProfileDB).filter(ProfileDB.id == 1).first()
+    if not profile:
+        raise HTTPException(
+            status_code=404, detail="No profile saved yet. POST /profile first."
+        )
+    return profile
+
+
+@app.post("/profile", response_model=ProfileOut)
+def save_profile(payload: ProfileIn, db: Session = Depends(get_db)):
+    profile = db.query(ProfileDB).filter(ProfileDB.id == 1).first()
+    if profile:
+        profile.resume_text = payload.resume_text
+    else:
+        profile = ProfileDB(id=1, resume_text=payload.resume_text)
+        db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+# ---- Matching ----
+
 class MatchRequest(BaseModel):
     resume_text: str
     job_description: str
@@ -84,8 +169,6 @@ def match_resume_to_job(payload: MatchRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-# ---- New: batch scoring across all saved applications ----
 
 class BatchMatchRequest(BaseModel):
     resume_text: str
@@ -102,12 +185,6 @@ class BatchMatchResult(BaseModel):
 
 @app.post("/applications/match-resume", response_model=list[BatchMatchResult])
 def match_resume_against_all(payload: BatchMatchRequest, db: Session = Depends(get_db)):
-    """
-    Scores one resume against every saved application's job description,
-    and returns the results ranked best-match first. This turns the
-    single-pair matcher into a real "which of my saved jobs am I the
-    strongest fit for" tool.
-    """
     applications = db.query(ApplicationDB).all()
 
     if not applications:
@@ -121,8 +198,6 @@ def match_resume_against_all(payload: BatchMatchRequest, db: Session = Depends(g
         try:
             match = score_match(payload.resume_text, application.job_description)
         except ValueError:
-            # Skip any application with an empty/unusable job description
-            # rather than failing the whole batch for one bad record.
             continue
 
         results.append(
@@ -136,6 +211,5 @@ def match_resume_against_all(payload: BatchMatchRequest, db: Session = Depends(g
             )
         )
 
-    # Best match first
     results.sort(key=lambda r: r.match_score, reverse=True)
     return results
