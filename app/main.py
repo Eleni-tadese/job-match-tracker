@@ -6,10 +6,19 @@ from app.database import engine, get_db, Base
 from app.models import ApplicationDB
 from app.matcher import score_match
 
+from fastapi.middleware.cors import CORSMiddleware
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Job Match Tracker")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # Next.js dev server
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class Application(BaseModel):
     company: str
