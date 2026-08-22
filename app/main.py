@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import engine, get_db, Base
 from app.models import ApplicationDB, ProfileDB
 from app.matcher import score_match
-
+from app.job_discovery import discover_and_score
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Job Match Tracker")
@@ -141,7 +141,30 @@ def get_profile(db: Session = Depends(get_db)):
         )
     return profile
 
+@app.get("/discover-jobs")
+def discover_jobs(
+    search: str = "",
+    category: str = "software-dev",
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    profile = db.query(ProfileDB).filter(ProfileDB.id == 1).first()
+    if not profile or not profile.resume_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="No resume saved. POST /profile with your resume_text first.",
+        )
 
+    try:
+        results = discover_and_score(
+            profile.resume_text, search=search, category=category, limit=limit
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502, detail=f"Couldn't fetch live jobs right now: {e}"
+        )
+
+    return results
 @app.post("/profile", response_model=ProfileOut)
 def save_profile(payload: ProfileIn, db: Session = Depends(get_db)):
     profile = db.query(ProfileDB).filter(ProfileDB.id == 1).first()
