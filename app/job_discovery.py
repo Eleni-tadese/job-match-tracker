@@ -6,6 +6,7 @@ documented API, provided specifically for third-party apps to use.
 """
 
 import re
+import zlib
 import httpx
 from app.matcher import score_match
 
@@ -85,10 +86,22 @@ def discover_and_score(
         except ValueError:
             continue
 
+        job_id = job.get("id")
+        if job_id is None:
+            raw_key = f"{job.get('company_name', '')}-{job.get('title', '')}-{job.get('url', '')}"
+            job_id = zlib.crc32(raw_key.encode())
+        elif not isinstance(job_id, int):
+            try:
+                job_id = int(job_id)
+            except ValueError:
+                job_id = zlib.crc32(str(job_id).encode())
+
         results.append(
             {
+                "id": job_id,
                 "title": job.get("title", ""),
                 "company_name": job.get("company_name", ""),
+                "category": job.get("category", ""),
                 "url": job.get("url", ""),
                 "candidate_required_location": job.get(
                     "candidate_required_location", ""
